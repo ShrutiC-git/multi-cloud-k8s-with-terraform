@@ -10,7 +10,31 @@ The architecture is divided into two main traffic patterns:
 
 1.  **North-South Traffic (User to Application):** Managed by AWS Route 53. User requests are directed to the primary AWS region (set as ap-south-1 in this example). If health checks for the AWS Application Load Balancer (ALB) fail, Route 53 automatically reroutes all traffic to the GCP Cloud Load Balancer.
 
-2.  **East-West Traffic (Service-to-Service):** Managed by HashiCorp Consul. A federated Consul service mesh is deployed across both Kubernetes clusters. This allows services to communicate seamlessly with each other across cloud boundaries using consistent DNS names (e.g., `billing-api.service.consul`), regardless of which region is currently active. This will be used by our K8s-services.
+2.  **East-West Traffic (Service-to-Service):** Managed by HashiCorp Consul. A federated Consul service mesh is deployed across both Kubernetes clusters. This allows services to communicate seamlessly with each other across cloud boundaries using consistent DNS names (e.g., `billing-api.service.consul`), regardless of which region is currently active.
+
+```mermaid
+graph TD
+    subgraph Internet
+        User
+    end
+
+    subgraph "AWS Route 53"
+        DNS[your-domain.com]
+    end
+
+    subgraph "AWS (Primary)"
+        AWS_ALB[Application LB] --> EKS[EKS Cluster]
+    end
+
+    subgraph "GCP (Secondary)"
+        GCP_LB[Cloud LB] --> GKE[GKE Cluster]
+    end
+
+    User -- North-South --> DNS
+    DNS -- Primary --> AWS_ALB
+    DNS -- Failover --> GCP_LB
+    EKS <-- Consul Federation --> GKE
+```
 ---
 
 ## Directory Structure
@@ -48,39 +72,30 @@ Follow these steps to provision the entire multi-cloud environment.
     *   Purchase a domain name and have it managed by AWS Route 53.
 
 ### Step 1: Global Backend Setup
-
-Terraform state is stored remotely to enable collaboration and secure state management. This project uses AWS S3 with DynamoDB for the AWS/DNS state and GCS for the GCP state.
-
-The `plan.sh` and `apply.sh` helper scripts will create global backend on AWS and GCP and store it's state locally. 
-
-Ideally, the initial creation of the infrastructure to hold remote state should be done manually, so we are not storing `.tfstate` locally. However, for this project, the creation of the global backend is through Terraform and local-state.
+ 
+This project uses a bootstrapping approach for Terraform state management. The `global` component is responsible for creating the remote backends (an S3 bucket in AWS and a GCS bucket in GCP) that will be used by all other components.
+ 
+For this project, the `global` component itself will store its state **locally** in a `terraform.tfstate` file within the `infra/global/` directory.
+ 
+**Note on Best Practices:** In a production or team environment, it is highly recommended to create the backend resources manually and configure a remote backend for the `global` component as well. This prevents the initial state from being tied to a single machine. However, for simplicity and ease of setup in this project, we use a local state for the initial bootstrapping.
+ 
+No manual action is required here if you follow the scripts, but be aware of this design decision.
 
 ### Step 2: Provision Cloud Infrastructure
 
-Use the provided scripts to deploy the infrastructure in the correct order. The scripts manage Terraform initialization and workspace selection.
+Use the provided scripts from the `infra/scripts` directory to deploy the infrastructure. This ensures all components are planned and applied in the correct order of dependency.
 
-**Deployment Order is Critical:**
-
-1.  **Global:** Creates the Route 53 Hosted Zone along with the remote backend for both AWS and GCP.
+1.  **Plan all changes:**
     ```bash
-    cd infra/scripts
-    ./run_tf_command.sh apply ../global staging
+    ./plan.sh staging
     ```
+    Review the generated plans in each component directory (`../aws`, `../gcp`, etc.) to ensure the changes are expected.
 
-2.  **AWS (Primary Region):** Deploys the VPC, EKS cluster, ALB, RDS, and Redis.
+2.  **Apply all changes:**
     ```bash
-    ./run_tf_command.sh apply ../aws staging
+    ./apply.sh staging
     ```
-
-3.  **GCP (Secondary Region):** Deploys the VPC, GKE cluster, and Cloud Load Balancer.
-    ```bash
-    ./run_tf_command.sh apply ../gcp staging
-    ```
-
-4.  **DNS:** Configures the Route 53 failover records. This must be last as it depends on outputs from both the AWS and GCP deployments.
-    ```bash
-    ./run_tf_command.sh apply ../dns staging
-    ```
+    This will execute the plans created in the previous step.
 
 ### Step 3: Configure `kubectl`
 
@@ -88,11 +103,11 @@ After provisioning, configure `kubectl` to communicate with your new clusters.
 
 *   **For EKS (AWS):**
     ```bash
-    aws eks update-kubeconfig --region <your-aws-region> --name <your-eks-cluster-name>
+    aws eks update-kubeconfig --region $(terraform -chdir=infra/aws output -raw region) --name $(terraform -chdir=infra/aws output -raw eks_cluster_name)
     ```
 *   **For GKE (GCP):**
     ```bash
-    gcloud container clusters get-credentials <your-gke-cluster-name> --region <your-gcp-region>
+    gcloud container clusters get-credentials $(terraform -chdir=infra/gcp output -raw gke_cluster_name) --region $(terraform -chdir=infra/gcp output -raw region)
     ```
 
 ### Step 4: Deploy Consul Service Mesh
@@ -103,7 +118,7 @@ Consul is deployed using Helm after the infrastructure is ready. This process in
     ```bash
     terraform -chdir=infra/gcp output nat_egress_ips
     ```
-    Copy the output and replace the placeholder IPs in `consul/consul-aws-values.yaml` under the `loadBalancerSourceRanges` annotation.
+    Copy the output and replace the placeholder IPs in `consul/consul-aws-values.yaml` under the `service.beta.kubernetes.io/aws-load-balancer-source-ranges` annotation.
 
 2.  **Deploy Consul to AWS (Primary):** Switch your `kubectl` context to the EKS cluster.
     ```bash
@@ -124,7 +139,24 @@ Consul is deployed using Helm after the infrastructure is ready. This process in
     helm install consul-gcp hashicorp/consul --values consul/consul-gcp-values.yaml --namespace consul --create-namespace
     ```
 
-Your multi-cloud service mesh is now operational! You can verify the federation by port-forwarding to the Consul UI and checking that both `aws` and `gcp` datacenters are visible.
+### Step 5: Verify Consul Federation
+
+Your multi-cloud service mesh is now operational. You can verify that the two datacenters are federated using the following methods.
+
+1.  **Via the UI (from AWS cluster):**
+    ```bash
+    # Port-forward the Consul UI service
+    kubectl port-forward service/consul-ui -n consul 8501:80
+    ```
+    Navigate to `http://localhost:8501` in your browser. You should see both `aws` and `gcp` datacenters in the dropdown menu at the top left.
+
+2.  **Via the CLI (from any server pod):**
+    ```bash
+    # Exec into a Consul server pod in the AWS cluster
+    kubectl exec -it consul-server-0 -n consul -- /bin/sh
+    # Run the member command to see servers in both datacenters
+    consul members -wan
+    ```
 
 ---
 

@@ -23,5 +23,5 @@ run_tf_command "apply" "../gcp" "$ENV"
 run_tf_command "apply" "../dns" "$ENV"
 
 echo "-------------------------------------"
-echo "All modules for '$ENV' applied successfully."
+echo "All infrastructure for '$ENV' applied successfully."
 echo "-------------------------------------"
