@@ -1,0 +1,29 @@
+# gitops/consul/consul-gcp-values.yaml
+
+global:
+  name: consul 
+  # The name for this datacenter
+  datacenter: gcp
+  # Enable federation for this secondary datacenter
+  federation:
+    enabled: true
+    # This datacenter is a secondary, and the primary is 'aws'
+    primaryDatacenter: "aws"
+
+# Deploy a highly-available, 3-server cluster.
+# This ensures the GCP control plane can tolerate a single server failure
+# without impacting the service mesh in that datacenter.
+server:
+  replicas: 3
+  bootstrapExpect: 3
+
+# Enable the Connect service mesh sidecar injector
+connectInject:
+  enabled: true
+
+# This extraConfig block tells the GCP servers how to find and join the AWS primary.
+# You must replace the placeholder below with the real address from the AWS LoadBalancer.
+extraConfig: |
+  {
+    "retry_join": ["<REPLACE_WITH_AWS_LOAD_BALANCER_ADDRESS>"]
+  }

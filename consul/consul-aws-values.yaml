@@ -1,0 +1,40 @@
+# gitops/consul/consul-aws-values.yaml
+
+global:
+  # The name of the Consul installation
+  name: consul
+  # The name for this datacenter
+  datacenter: aws
+  # Enable federation between Consul datacenters
+  federation:
+    enabled: true
+    # This datacenter is the primary one
+    primaryDatacenter: "aws"
+    # Automatically create the federation secret for other datacenters to use
+    createFederationSecret: true
+
+# Deploy a highly-available, 3-server cluster.
+# For production, 3 or 5 replicas are recommended to ensure the Raft
+# consensus algorithm can tolerate failures.
+server:
+  replicas: 3
+  bootstrapExpect: 3
+  # Use a Kubernetes LoadBalancer service to expose the Consul servers to the
+  # internet. This provides a stable, public endpoint that the secondary
+  # datacenter (GCP) can use to join the federation.
+  service:
+    type: LoadBalancer
+    # This annotation acts as a firewall for the Load Balancer, ensuring that
+    # only traffic from the GCP cluster's outbound NAT IPs can reach the Consul
+    # servers. This is critical for securing the federation join process.
+    # The GCP Consul servers initiate the connection (egress from GCP), and this
+    # rule allows that specific traffic (ingress to AWS).
+    annotations:
+      # This is a placeholder. You must replace this with your actual GCP egress IPs.
+      # After running `terraform apply` for the GCP infrastructure, you can get the
+      # correct values by running `terraform -chdir=infra/gcp output nat_egress_ips`
+      "service.beta.kubernetes.io/aws-load-balancer-source-ranges": "34.1.2.3/32, 35.4.5.6/32"
+
+# Enable the Connect service mesh sidecar injector
+connectInject:
+  enabled: true
