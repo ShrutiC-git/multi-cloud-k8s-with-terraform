@@ -2,7 +2,7 @@
 
 This project provides a robust, minimal setup for a multi-cloud Kubernetes architecture spanning AWS and Google Cloud Platform (GCP). It uses Terraform for infrastructure provisioning, AWS Route 53 for DNS-based failover, and HashiCorp Consul for cross-cluster service discovery and service mesh capabilities.
 
-The primary goal is to create a resilient Active-Passive setup where AWS serves as the primary region and GCP acts as a hot standby.
+The primary goal is to create a resilient Active-Passive setup where AWS serves as the primary region and GCP acts as a hot standby, with AWS Route 53 handling the failover.
 
 ## Core Architecture
 
